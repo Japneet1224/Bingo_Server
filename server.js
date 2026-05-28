@@ -17,7 +17,7 @@ const io = new Server(server, {
 
 // --- GAME STATE MEMORY ---
 let quickMatchQueue = [];
-const friendsRooms = {}; // Format: { [roomCode]: { players: [{id, name, lines}], turnIndex: 0, status: 'lobby' } }
+const friendsRooms = {}; // Format: { [roomCode]: { players: [{id, name, lines}], currentTurnIndex: 0, status: 'lobby' } }
 
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
@@ -69,26 +69,34 @@ io.on('connection', (socket) => {
     const { playerName, roomCode } = data;
     const room = friendsRooms[roomCode];
     
-    if (room && room.status === 'lobby' && room.players.length < 5) {
-      room.players.push({ id: socket.id, name: playerName, lines: 0 });
-      socket.join(roomCode);
-      socket.friendsRoom = roomCode;
-      io.to(roomCode).emit('roomUpdated', room.players);
-      console.log(`${playerName} joined room: ${roomCode}`);
+    if (room) {
+      if (room.status === 'lobby' && room.players.length < 5) {
+        room.players.push({ id: socket.id, name: playerName, lines: 0 });
+        socket.join(roomCode);
+        socket.friendsRoom = roomCode;
+        io.to(roomCode).emit('roomUpdated', room.players);
+        console.log(`${playerName} joined room: ${roomCode}`);
+      } 
+      // THE FIX: Allow players to silently reconnect to an active game
+      else if (room.status === 'playing') {
+        const existingPlayer = room.players.find(p => p.name === playerName);
+        if (existingPlayer) {
+          existingPlayer.id = socket.id; 
+          socket.join(roomCode);
+          socket.friendsRoom = roomCode;
+          console.log(`${playerName} reconnected to active room: ${roomCode}`);
+        }
+      }
     }
-  });
-
-  socket.on('shareFriendsBoard', (data) => {
-    const {roomCode, board, playerId} = data;
-    socket.io(roomCode).emit('friendsBoardShared', {playerId, board});
   });
 
   socket.on('startGame', (roomCode) => {
     const room = friendsRooms[roomCode];
     if (room) {
       room.status = 'playing';
-      // Host (player index 0) goes first
-      io.to(roomCode).emit('gameStarted', room.players[0].id);
+      // THE FIX: Emit the player's NAME, not their easily broken socket ID
+      io.to(roomCode).emit('gameStarted', room.players[0].name);
+      console.log(`Game started in room: ${roomCode}`);
     }
   });
 
@@ -103,6 +111,11 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('shareFriendsBoard', (data) => {
+    const { roomCode, board, playerId } = data;
+    socket.to(roomCode).emit('friendsBoardShared', { playerId, board });
+  });
+
   socket.on('selectNumber', (data) => {
     // Check if it's Quick Match (payload is a simple number)
     if (typeof data === 'number') {
@@ -114,8 +127,9 @@ io.on('connection', (socket) => {
       const room = friendsRooms[roomCode];
       if (room) {
         room.currentTurnIndex = (room.currentTurnIndex + 1) % room.players.length;
-        const nextTurnId = room.players[room.currentTurnIndex].id;
-        io.to(roomCode).emit('numberSelected', { number, nextTurnId });
+        // THE FIX: Calculate whose turn is next based on their permanent Name
+        const nextTurnName = room.players[room.currentTurnIndex].name;
+        io.to(roomCode).emit('numberSelected', { number, nextTurnName });
       }
     }
   });
@@ -162,18 +176,23 @@ io.on('connection', (socket) => {
     if (socket.friendsRoom) {
       const room = friendsRooms[socket.friendsRoom];
       if (room) {
-        room.players = room.players.filter(p => p.id !== socket.id);
-        if (room.players.length === 0) {
-          delete friendsRooms[socket.friendsRoom]; // Delete empty room
-        } else {
-          io.to(socket.friendsRoom).emit('roomUpdated', room.players);
+        // THE FIX: Only delete players if the game is still in the lobby!
+        if (room.status === 'lobby') {
+          room.players = room.players.filter(p => p.id !== socket.id);
+          if (room.players.length === 0) {
+            delete friendsRooms[socket.friendsRoom]; // Delete empty room
+            console.log(`Room ${socket.friendsRoom} deleted (empty)`);
+          } else {
+            io.to(socket.friendsRoom).emit('roomUpdated', room.players);
+          }
         }
       }
     }
   });
 });
 
-const PORT = 3000;
+// Port binding explicitly set up for deployment platforms like Render
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`AION Innovations Multiplayer Server running on port ${PORT}`);
+  console.log(`Multiplayer Server running on port ${PORT}`);
 });
