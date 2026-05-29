@@ -22,7 +22,9 @@ const friendsRooms = {};
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
 
+  // ==========================================
   // 1. QUICK MATCH LOGIC
+  // ==========================================
   socket.on('joinQuickMatch', () => {
     quickMatchQueue.push(socket);
     console.log(`Player joined Quick Match queue. Queue size: ${quickMatchQueue.length}`);
@@ -35,12 +37,36 @@ io.on('connection', (socket) => {
       
       player1.join(roomName);
       player2.join(roomName);
-
       player1.qmRoom = roomName;
       player2.qmRoom = roomName;
 
       io.to(roomName).emit('matchFound', { startingPlayer: player1.id });
       console.log(`Quick Match started: Room ${roomName}`);
+    }
+  });
+
+  // --- NEW REMATCH LOGIC ---
+  socket.on('requestRematch', () => {
+    if (socket.qmRoom) socket.to(socket.qmRoom).emit('rematchRequested');
+  });
+
+  socket.on('acceptRematch', () => {
+    if (socket.qmRoom) {
+      // Both players are ready. Restart the match in the exact same room!
+      // We will make the person who accepted go first.
+      io.to(socket.qmRoom).emit('matchFound', { startingPlayer: socket.id });
+    }
+  });
+
+  socket.on('declineRematch', () => {
+    if (socket.qmRoom) socket.to(socket.qmRoom).emit('rematchDeclined');
+  });
+
+  socket.on('leaveMatch', () => {
+    if (socket.qmRoom) {
+      socket.to(socket.qmRoom).emit('opponentLeft');
+      socket.leave(socket.qmRoom);
+      socket.qmRoom = null;
     }
   });
 
